@@ -47,8 +47,6 @@ def off_topic_node(state: AgentState) -> AgentState:
     user_message = messages[-1] if messages else ""
     out = _AGENT.respond(user_message=user_message)
 
-    print("off_topic_node")
-
     client_state = dict(state.get("client_state") or {})
     client_state["session_id"] = str(state.get("session_id") or client_state.get("session_id") or "")
     client_state["turns_used"] = int(client_state.get("turns_used") or state.get("turns_used") or 0)

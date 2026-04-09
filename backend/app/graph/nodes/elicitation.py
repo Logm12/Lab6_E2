@@ -9,7 +9,7 @@ from app.graph.state import AgentState
 from app.models import ElicitationQuestion, NextStep, RecommendResponse
 from app.services.rag.memory import EnhancedConversationMemory
 from app.services.llm.client import llm_client
-from app.utils import build_history_context, debug_print, last_user_text, trace_step
+from app.utils import trace_step
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -18,58 +18,54 @@ _LOGGER = logging.getLogger(__name__)
 class ElicitationAgent:
     def run(self, state: AgentState) -> RecommendResponse:
         messages = list(state.get("messages") or [])
-        ui_messages = state.get("ui_messages")
         turns_used = int(state.get("turns_used") or 0)
         profile = dict(state.get("profile") or {})
-        debug_print("DEBUG_PIPELINE", "elicitation.input", {"turns_used": turns_used, "missing": list(state.get("missing") or []), "profile": {"budget_vnd": profile.get("budget_vnd"), "seats": profile.get("seats")}})
-        print("elicitation_node")
-        if isinstance(ui_messages, list) and ui_messages:
-            history_text = build_history_context(ui_messages, max_messages=10, max_turns=10)
-            last_message = last_user_text(ui_messages) or (messages[-1] if messages else "")
-        else:
-            memory = EnhancedConversationMemory(max_messages=10)
-            for m in messages:
-                memory.add_message(role="user", content=str(m))
-            last_message = messages[-1] if messages else ""
-            history_text = memory.get_context(max_turns=10)
+
+        memory = EnhancedConversationMemory(max_messages=10)
+        for m in messages:
+            memory.add_message(role="user", content=str(m))
+        last_message = messages[-1] if messages else ""
+        history_text = memory.get_context(max_turns=10)
+
         assistant_message = ""
         questions: list[ElicitationQuestion] = []
-        try:
-            user_prompt = ELICITATION_USER_PROMPT_TEMPLATE.format(
-                history_text=history_text,
-                last_message=last_message,
-                profile_json=json.dumps(profile, ensure_ascii=False),
-                turns_used=str(turns_used),
-            )
-            parsed = llm_client.chat_completion_json(
-                system_prompt=ELICITATION_SYSTEM_PROMPT,
-                user_prompt=user_prompt,
-                model=settings.elicitation_model,
-            )
-            print("parsed", parsed)
-            assistant_message = str(parsed.get("assistant_message") or "").strip()
-            questions_raw = parsed.get("questions") or []
-            if isinstance(questions_raw, list):
-                for q in questions_raw[:2]:
-                    if not isinstance(q, dict):
-                        continue
-                    q_id = str(q.get("id") or "").strip()
-                    q_text = str(q.get("question") or "").strip()
-                    if not q_text:
-                        continue
-                    q_choices = q.get("choices")
-                    if isinstance(q_choices, list):
-                        choices = [str(c).strip() for c in q_choices if str(c).strip()]
-                    else:
-                        choices = None
-                    try:
-                        questions.append(
-                            ElicitationQuestion(id=q_id or "q", question=q_text, choices=choices or None)
-                        )
-                    except Exception:
-                        pass
-        except Exception as e:
-            _LOGGER.info("elicitation_llm_failed: %s", str(e))
+        if settings.api_key:
+            try:
+                user_prompt = ELICITATION_USER_PROMPT_TEMPLATE.format(
+                    history_text=history_text,
+                    last_message=last_message,
+                    profile_json=json.dumps(profile, ensure_ascii=False),
+                    turns_used=str(turns_used),
+                )
+                parsed = llm_client.chat_completion_json(
+                    system_prompt=ELICITATION_SYSTEM_PROMPT,
+                    user_prompt=user_prompt,
+                    model=settings.elicitation_model,
+                )
+                assistant_message = str(parsed.get("assistant_message") or "").strip()
+                questions_raw = parsed.get("questions") or []
+                if isinstance(questions_raw, list):
+                    for q in questions_raw[:2]:
+                        if not isinstance(q, dict):
+                            continue
+                        q_id = str(q.get("id") or "").strip()
+                        q_text = str(q.get("question") or "").strip()
+                        if not q_text:
+                            continue
+                        q_choices = q.get("choices")
+                        if isinstance(q_choices, list):
+                            choices = [str(c).strip() for c in q_choices if str(c).strip()]
+                        else:
+                            choices = None
+                        try:
+                            questions.append(
+                                ElicitationQuestion(id=q_id or "q", question=q_text, choices=choices or None)
+                            )
+                        except Exception:
+                            pass
+            except Exception as e:
+                _LOGGER.info("elicitation_llm_failed: %s", str(e))
+
         if not questions:
             missing = list(state.get("missing") or [])
             if "budget_vnd" in missing:
@@ -108,7 +104,6 @@ class ElicitationAgent:
         client_state["turns_used"] = turns_used + 1
         client_state["last_questions"] = [q.model_dump() for q in questions]
         client_state["profile"] = dict(profile)
-        debug_print("DEBUG_PIPELINE", "elicitation.output", {"client_turns_used": client_state["turns_used"], "question_ids": [q.id for q in questions]})
 
         return RecommendResponse(
             next_step=NextStep.ask,
